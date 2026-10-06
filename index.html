@@ -1,0 +1,324 @@
+<!--
+  EV CHARGING STATION FINDER — fyndmycar.com (State + City + Strict EV-only filtering, New Places API)
+  =========================================================================================================
+  SETUP:
+  1. In Google Cloud Console > APIs & Services > Library, make sure "Places API (New)" is ENABLED
+     (in addition to "Maps JavaScript API" and the older "Places API" you may already have).
+  2. Replace YOUR_GOOGLE_MAPS_API_KEY below with your real key.
+  3. Paste this entire file into an Elementor HTML widget and publish.
+
+  WHY THIS VERSION CHANGED:
+  - The legacy nearbySearch "type" parameter does NOT reliably filter to EV charging stations only —
+    Google silently ignores it for this type and returns generic nearby places (hotels, banks, schools, etc).
+  - This version uses Google's new Places API (searchNearby with includedTypes), which properly and
+    strictly returns ONLY electric_vehicle_charging_station results — nothing else gets shown or pinned.
+  - State dropdown cascades into a City dropdown (major cities per state). Picking a city zooms/searches
+    that specific area; "All / Whole State" searches the state-wide center.
+-->
+
+<div id="evf-root" style="max-width:1100px;margin:0 auto;font-family:Manrope,Helvetica,sans-serif;">
+
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:14px;">
+      <select id="evf-state" style="padding:10px 14px;border:1px solid #ccc;border-radius:8px;font-size:15px;min-width:230px;">
+        <option value="">📍 Near Me (auto-detected)</option>
+      </select>
+      <select id="evf-city" style="padding:10px 14px;border:1px solid #ccc;border-radius:8px;font-size:15px;min-width:200px;display:none;">
+        <option value="">All / Whole State</option>
+      </select>
+      <button id="evf-gps-btn" style="padding:10px 16px;border:none;border-radius:8px;background:#ED1B24;color:#fff;font-size:14px;cursor:pointer;">
+        Use My Exact Location
+      </button>
+      <span id="evf-status" style="font-size:14px;color:#555;"></span>
+    </div>
+  
+    <div id="evf-map" style="width:100%;height:420px;border-radius:10px;margin-bottom:18px;background:#eee;"></div>
+  
+    <div id="evf-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;"></div>
+  
+  </div>
+  
+  <script>
+    // ====== CONFIG ======
+    const GOOGLE_MAPS_API_KEY = "AIzaSyB7ullnT0RqIMeKMa6r2Py4dF5YJiuQRo4";
+    // =====================
+  
+    // States with center coords + major cities (lat/lng). Add more cities anytime.
+    const STATES = {
+      "Andhra Pradesh": { center:[15.9129,79.7400], cities:{ "Visakhapatnam":[17.6868,83.2185], "Vijayawada":[16.5062,80.6480], "Guntur":[16.3067,80.4365], "Tirupati":[13.6288,79.4192], "Nellore":[14.4426,79.9865], "Kurnool":[15.8281,78.0373], "Kakinada":[16.9891,82.2475], "Rajahmundry":[17.0005,81.8040], "Kadapa":[14.4673,78.8242], "Anantapur":[14.6819,77.6006] } },
+      "Arunachal Pradesh": { center:[28.2180,94.7278], cities:{ "Itanagar":[27.0844,93.6053], "Tawang":[27.5859,91.8594], "Naharlagun":[27.1040,93.6953] } },
+      "Assam": { center:[26.2006,92.9376], cities:{ "Guwahati":[26.1445,91.7362], "Dibrugarh":[27.4728,94.9120], "Silchar":[24.8333,92.7789], "Jorhat":[26.7509,94.2037], "Tezpur":[26.6338,92.8000], "Nagaon":[26.3470,92.6840] } },
+      "Bihar": { center:[25.0961,85.3131], cities:{ "Patna":[25.5941,85.1376], "Gaya":[24.7955,84.9994], "Bhagalpur":[25.2425,86.9842], "Muzaffarpur":[26.1209,85.3647], "Darbhanga":[26.1542,85.8918], "Purnia":[25.7771,87.4753] } },
+      "Chhattisgarh": { center:[21.2787,81.8661], cities:{ "Raipur":[21.2514,81.6296], "Bilaspur":[22.0797,82.1409], "Durg":[21.1904,81.2849], "Bhilai":[21.2092,81.4285], "Korba":[22.3595,82.7501] } },
+      "Goa": { center:[15.2993,74.1240], cities:{ "Panaji":[15.4909,73.8278], "Margao":[15.2832,73.9862], "Vasco da Gama":[15.3955,73.8154], "Mapusa":[15.5937,73.8142] } },
+      "Gujarat": { center:[22.2587,71.1924], cities:{ "Ahmedabad":[23.0225,72.5714], "Surat":[21.1702,72.8311], "Vadodara":[22.3072,73.1812], "Rajkot":[22.3039,70.8022], "Bhavnagar":[21.7645,72.1519], "Jamnagar":[22.4707,70.0577], "Gandhinagar":[23.2156,72.6369], "Junagadh":[21.5222,70.4579], "Anand":[22.5645,72.9289] } },
+      "Haryana": { center:[29.0588,76.0856], cities:{ "Gurugram":[28.4595,77.0266], "Faridabad":[28.4089,77.3178], "Panipat":[29.3909,76.9635], "Ambala":[30.3782,76.7767], "Hisar":[29.1492,75.7217], "Karnal":[29.6857,76.9905], "Rohtak":[28.8955,76.6066] } },
+      "Himachal Pradesh": { center:[31.1048,77.1734], cities:{ "Shimla":[31.1048,77.1734], "Dharamshala":[32.2190,76.3234], "Manali":[32.2432,77.1892], "Solan":[30.9045,77.0967], "Mandi":[31.7080,76.9318] } },
+      "Jharkhand": { center:[23.6102,85.2799], cities:{ "Ranchi":[23.3441,85.3096], "Jamshedpur":[22.8046,86.2029], "Dhanbad":[23.7957,86.4304], "Bokaro":[23.6693,86.1511], "Deoghar":[24.4823,86.6961] } },
+      "Karnataka": { center:[15.3173,75.7139], cities:{ "Bengaluru":[12.9716,77.5946], "Mysuru":[12.2958,76.6394], "Mangaluru":[12.9141,74.8560], "Hubballi":[15.3647,75.1240], "Belagavi":[15.8497,74.4977], "Davangere":[14.4644,75.9932], "Shivamogga":[13.9299,75.5681], "Tumakuru":[13.3409,77.1010] } },
+      "Kerala": { center:[10.8505,76.2711], cities:{ "Kochi":[9.9312,76.2673], "Thiruvananthapuram":[8.5241,76.9366], "Kozhikode":[11.2588,75.7804], "Thrissur":[10.5276,76.2144], "Kollam":[8.8932,76.6141], "Kannur":[11.8745,75.3704], "Alappuzha":[9.4981,76.3388], "Palakkad":[10.7867,76.6548] } },
+      "Madhya Pradesh": { center:[22.9734,78.6569], cities:{ "Bhopal":[23.2599,77.4126], "Indore":[22.7196,75.8577], "Gwalior":[26.2183,78.1828], "Jabalpur":[23.1815,79.9864], "Ujjain":[23.1765,75.7885], "Sagar":[23.8388,78.7378], "Satna":[24.5854,80.8322] } },
+      "Maharashtra": { center:[19.7515,75.7139], cities:{ "Mumbai":[19.0760,72.8777], "Pune":[18.5204,73.8567], "Nagpur":[21.1458,79.0882], "Nashik":[19.9975,73.7898], "Aurangabad":[19.8762,75.3433], "Solapur":[17.6599,75.9064], "Thane":[19.2183,72.9781], "Kolhapur":[16.7050,74.2433], "Amravati":[20.9374,77.7796], "Navi Mumbai":[19.0330,73.0297] } },
+      "Manipur": { center:[24.6637,93.9063], cities:{ "Imphal":[24.8170,93.9368] } },
+      "Meghalaya": { center:[25.4670,91.3662], cities:{ "Shillong":[25.5788,91.8933], "Tura":[25.5138,90.2204] } },
+      "Mizoram": { center:[23.1645,92.9376], cities:{ "Aizawl":[23.7271,92.7176] } },
+      "Nagaland": { center:[26.1584,94.5624], cities:{ "Kohima":[25.6751,94.1086], "Dimapur":[25.9091,93.7280] } },
+      "Odisha": { center:[20.9517,85.0985], cities:{ "Bhubaneswar":[20.2961,85.8245], "Cuttack":[20.4625,85.8830], "Rourkela":[22.2604,84.8536], "Berhampur":[19.3149,84.7941], "Sambalpur":[21.4669,83.9756] } },
+      "Punjab": { center:[31.1471,75.3412], cities:{ "Ludhiana":[30.9010,75.8573], "Amritsar":[31.6340,74.8723], "Chandigarh (Tricity)":[30.7333,76.7794], "Jalandhar":[31.3260,75.5762], "Patiala":[30.3398,76.3869], "Bathinda":[30.2110,74.9455], "Mohali":[30.7046,76.7179] } },
+      "Rajasthan": { center:[27.0238,74.2179], cities:{ "Jaipur":[26.9124,75.7873], "Jodhpur":[26.2389,73.0243], "Udaipur":[24.5854,73.7125], "Kota":[25.2138,75.8648], "Ajmer":[26.4499,74.6399], "Bikaner":[28.0229,73.3119], "Alwar":[27.5530,76.6346] } },
+      "Sikkim": { center:[27.5330,88.5122], cities:{ "Gangtok":[27.3389,88.6065] } },
+      "Tamil Nadu": { center:[11.1271,78.6569], cities:{ "Chennai":[13.0827,80.2707], "Coimbatore":[11.0168,76.9558], "Madurai":[9.9252,78.1198], "Tiruchirappalli":[10.7905,78.7047], "Salem":[11.6643,78.1460], "Tirunelveli":[8.7139,77.7567], "Vellore":[12.9165,79.1325], "Erode":[11.3410,77.7172] } },
+      "Telangana": { center:[18.1124,79.0193], cities:{ "Hyderabad":[17.3850,78.4867], "Warangal":[17.9689,79.5941], "Nizamabad":[18.6725,78.0941], "Karimnagar":[18.4386,79.1288], "Khammam":[17.2473,80.1514] } },
+      "Tripura": { center:[23.9408,91.9882], cities:{ "Agartala":[23.8315,91.2868] } },
+      "Uttar Pradesh": { center:[26.8467,80.9462], cities:{ "Lucknow":[26.8467,80.9462], "Noida":[28.5355,77.3910], "Kanpur":[26.4499,80.3319], "Ghaziabad":[28.6692,77.4538], "Agra":[27.1767,78.0081], "Varanasi":[25.3176,82.9739], "Meerut":[28.9845,77.7064], "Prayagraj":[25.4358,81.8463], "Bareilly":[28.3670,79.4304], "Aligarh":[27.8974,78.0880], "Moradabad":[28.8389,78.7768], "Gorakhpur":[26.7606,83.3732] } },
+      "Uttarakhand": { center:[30.0668,79.0193], cities:{ "Dehradun":[30.3165,78.0322], "Haridwar":[29.9457,78.1642], "Haldwani":[29.2183,79.5130], "Rishikesh":[30.0869,78.2676], "Nainital":[29.3919,79.4542] } },
+      "West Bengal": { center:[22.9868,87.8550], cities:{ "Kolkata":[22.5726,88.3639], "Howrah":[22.5958,88.2636], "Durgapur":[23.5204,87.3119], "Asansol":[23.6739,86.9524], "Siliguri":[26.7271,88.3953] } },
+      "Delhi (NCT)": { center:[28.7041,77.1025], cities:{ "New Delhi":[28.6139,77.2090], "Dwarka":[28.5921,77.0460], "Rohini":[28.7495,77.0565], "Saket":[28.5244,77.2066], "Karol Bagh":[28.6519,77.1909] } },
+      "Jammu and Kashmir": { center:[33.7782,76.5762], cities:{ "Srinagar":[34.0837,74.7973], "Jammu":[32.7266,74.8570], "Anantnag":[33.7311,75.1487], "Baramulla":[34.2096,74.3436] } },
+      "Ladakh": { center:[34.1526,77.5770], cities:{ "Leh":[34.1526,77.5770], "Kargil":[34.5539,76.1349] } },
+      "Puducherry": { center:[11.9416,79.8083], cities:{ "Puducherry":[11.9416,79.8083], "Karaikal":[10.9254,79.8380] } },
+      "Chandigarh": { center:[30.7333,76.7794], cities:{ "Chandigarh":[30.7333,76.7794] } }
+    };
+  
+    const EV_TYPE = 'electric_vehicle_charging_station';
+  
+    let map, markers = [];
+    let statusEl, listEl, stateSelect, citySelect;
+  
+    function setStatus(msg){ statusEl.textContent = msg; }
+  
+    function clearMarkers(){
+      markers.forEach(m => m.setMap(null));
+      markers = [];
+    }
+  
+    function kmDistance(lat1, lng1, lat2, lng2){
+      const R = 6371;
+      const dLat = (lat2-lat1) * Math.PI/180;
+      const dLng = (lng2-lng1) * Math.PI/180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+      return (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(1);
+    }
+  
+    function renderStations(places, originLat, originLng){
+      listEl.innerHTML = '';
+      clearMarkers();
+  
+      if (!places.length){
+        listEl.innerHTML = '<p style="color:#777;">No EV charging stations found in this area yet.</p>';
+        return;
+      }
+  
+      places.forEach(place => {
+        const lat = place.location.latitude;
+        const lng = place.location.longitude;
+        const dist = kmDistance(originLat, originLng, lat, lng);
+        const name = place.displayName ? place.displayName.text : 'EV Charging Station';
+        const address = place.formattedAddress || '';
+        const rating = place.rating ? `⭐ ${place.rating} (${place.userRatingCount || 0} reviews)` : 'No ratings yet';
+        const status = place.businessStatus === 'OPERATIONAL' ? 'Operational' : (place.businessStatus || 'Unknown status');
+  
+        const types = place.types || [];
+        const isFuelStationCombo = types.includes('gas_station');
+        const label = isFuelStationCombo ? '⛽⚡ Fuel station with EV charging' : '⚡ EV Charging Station';
+        const markerIcon = isFuelStationCombo
+          ? 'https://maps.google.com/mapfiles/ms/icons/orange-dot.png'
+          : 'https://maps.google.com/mapfiles/ms/icons/green-dot.png';
+  
+        // Opens turn-by-turn directions in Google Maps (app on mobile, web on desktop),
+        // using the user's current device location as the starting point automatically.
+        const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=&travelmode=driving`;
+  
+        const card = document.createElement('div');
+        card.style = 'border:1px solid #e0e0e0;border-radius:10px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.06);';
+        card.innerHTML = `
+          <div style="font-weight:600;font-size:15px;margin-bottom:4px;">${name}</div>
+          <div style="font-size:11px;font-weight:600;color:${isFuelStationCombo ? '#b35c00' : '#1a8a3d'};text-transform:uppercase;letter-spacing:0.3px;margin-bottom:6px;">${label}</div>
+          <div style="font-size:13px;color:#555;margin-bottom:6px;">${address}</div>
+          <div style="font-size:13px;color:#ED1B24;font-weight:600;margin-bottom:4px;">${dist} km away</div>
+          <div style="font-size:13px;color:#444;margin-bottom:2px;">${rating}</div>
+          <div style="font-size:13px;color:#777;margin-bottom:10px;">${status}</div>
+          <a href="${directionsUrl}" target="_blank" rel="noopener" style="display:inline-block;padding:8px 14px;background:#ED1B24;color:#fff;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;"> Navigate to this station</a>
+        `;
+        listEl.appendChild(card);
+  
+        const marker = new google.maps.Marker({
+          position: {lat, lng},
+          map,
+          title: name,
+          icon: {
+            url: markerIcon
+          }
+        });
+  
+        const infoWindow = new google.maps.InfoWindow({
+          content: `<div style="font-size:13px;max-width:220px;"><b>${name}</b><br><span style="color:${isFuelStationCombo ? '#b35c00' : '#1a8a3d'};">${label}</span><br>${address}<br>${dist} km away<br><a href="${directionsUrl}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;padding:5px 10px;background:#ED1B24;color:#fff;border-radius:5px;text-decoration:none;font-size:12px;font-weight:600;">📍 Navigate</a></div>`
+        });
+        marker.addListener('click', () => infoWindow.open(map, marker));
+  
+        markers.push(marker);
+      });
+    }
+  
+    function searchNearby(lat, lng, rankPreference){
+      return fetch('https://places.googleapis.com/v1/places:searchNearby', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.businessStatus,places.types'
+        },
+        body: JSON.stringify({
+          includedTypes: [EV_TYPE],
+          maxResultCount: 20, // 20 is Google's hard per-call max — we merge two calls below to reach up to 40
+          rankPreference: rankPreference,
+          locationRestriction: {
+            circle: {
+              center: { latitude: lat, longitude: lng },
+              radius: 50000.0
+            }
+          }
+        })
+      }).then(res => res.json()).then(data => data.places || []).catch(() => []);
+    }
+  
+    function fetchStations(lat, lng){
+      setStatus('Searching for EV charging stations...');
+  
+      // New Places API (searchNearby) — properly supports filtering to ONLY
+      // electric_vehicle_charging_station results, unlike the legacy nearbySearch
+      // type parameter which Google silently ignores for this type.
+      //
+      // Each call is capped at 20 results by Google. To get up to 40, we run two
+      // searches (distance-ranked + popularity-ranked) and merge unique stations
+      // by place id — this also surfaces a better mix of dedicated EV networks
+      // alongside fuel-station combo chargers, rather than one ranking dominating.
+      Promise.all([
+        searchNearby(lat, lng, 'DISTANCE'),
+        searchNearby(lat, lng, 'POPULARITY')
+      ]).then(([byDistance, byPopularity]) => {
+        const merged = {};
+        [...byDistance, ...byPopularity].forEach(p => {
+          if (p.id) merged[p.id] = p;
+        });
+        let places = Object.values(merged);
+  
+        // Sort by distance from search origin, cap at 40
+        places.forEach(p => { p._dist = parseFloat(kmDistance(lat, lng, p.location.latitude, p.location.longitude)); });
+        places.sort((a, b) => a._dist - b._dist);
+        places = places.slice(0, 40);
+  
+        renderStations(places, lat, lng);
+        setStatus(places.length ? `Found ${places.length} EV charging station(s) within 50 km` : 'No EV charging stations found within 50 km of this location.');
+      });
+    }
+  
+    function goToLocation(lat, lng, zoom){
+      if (!map){
+        map = new google.maps.Map(document.getElementById('evf-map'), {
+          center: {lat, lng}, zoom: zoom || 11
+        });
+      } else {
+        map.setCenter({lat, lng});
+        map.setZoom(zoom || 11);
+      }
+      fetchStations(lat, lng);
+    }
+  
+    function useIpLocation(){
+      setStatus('Detecting your location...');
+      fetch('https://ipapi.co/json/')
+        .then(res => res.json())
+        .then(data => {
+          if (data.latitude && data.longitude){
+            goToLocation(data.latitude, data.longitude, 12);
+          } else {
+            goToLocation(28.6139, 77.2090, 11);
+          }
+        })
+        .catch(() => goToLocation(28.6139, 77.2090, 11));
+    }
+  
+    function useGpsLocation(){
+      if (!navigator.geolocation){
+        setStatus('GPS not supported on this browser.');
+        return;
+      }
+      setStatus('Requesting your exact location...');
+      navigator.geolocation.getCurrentPosition(
+        pos => goToLocation(pos.coords.latitude, pos.coords.longitude, 13),
+        () => setStatus('Location permission denied. Showing IP-based location instead.')
+      );
+    }
+  
+    function populateCities(stateName){
+      citySelect.innerHTML = '<option value="">All / Whole State</option>';
+      const stateData = STATES[stateName];
+      if (!stateData){
+        citySelect.style.display = 'none';
+        return;
+      }
+      Object.keys(stateData.cities).forEach(cityName => {
+        const coords = stateData.cities[cityName];
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({lat:coords[0], lng:coords[1]});
+        opt.textContent = cityName;
+        citySelect.appendChild(opt);
+      });
+      citySelect.style.display = 'inline-block';
+    }
+  
+    function initWidget(){
+      statusEl = document.getElementById('evf-status');
+      listEl = document.getElementById('evf-list');
+      stateSelect = document.getElementById('evf-state');
+      citySelect = document.getElementById('evf-city');
+  
+      Object.keys(STATES).forEach(stateName => {
+        const opt = document.createElement('option');
+        const c = STATES[stateName].center;
+        opt.value = JSON.stringify({lat:c[0], lng:c[1]});
+        opt.dataset.state = stateName;
+        opt.textContent = stateName;
+        stateSelect.appendChild(opt);
+      });
+  
+      document.getElementById('evf-gps-btn').addEventListener('click', useGpsLocation);
+  
+      stateSelect.addEventListener('change', function(){
+        const selectedOption = this.options[this.selectedIndex];
+        if (!this.value){
+          citySelect.style.display = 'none';
+          useIpLocation();
+        } else {
+          const coords = JSON.parse(this.value);
+          const stateName = selectedOption.dataset.state;
+          populateCities(stateName);
+          goToLocation(coords.lat, coords.lng, 9); 
+        }
+      });
+  
+      citySelect.addEventListener('change', function(){
+        if (!this.value){
+          // "All / Whole State" selected — go back to state center
+          const stateOpt = stateSelect.options[stateSelect.selectedIndex];
+          if (stateOpt && stateOpt.value){
+            const coords = JSON.parse(stateOpt.value);
+            goToLocation(coords.lat, coords.lng, 9);
+          }
+        } else {
+          const coords = JSON.parse(this.value);
+          goToLocation(coords.lat, coords.lng, 12); // tighter zoom for city view
+        }
+      });
+  
+      useIpLocation();
+    }
+  
+    (function loadGoogleMaps(){
+      if (window.google && window.google.maps){ initWidget(); return; }
+      const script = document.createElement('script');
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places&loading=async&callback=__evfInit`;
+      window.__evfInit = initWidget;
+      document.head.appendChild(script);
+    })();
+  </script>

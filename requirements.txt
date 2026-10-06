@@ -1,0 +1,21 @@
+# HTTP & web scraping
+requests==2.34.2
+beautifulsoup4==4.15.0
+lxml==6.1.1
+selenium==4.45.0
+webdriver-manager==4.1.2
+
+# Image processing
+opencv-python==5.0.0.93
+numpy==2.5.1
+Pillow==12.2.0
+
+# Environment variables
+python-dotenv==1.2.2
+
+# Google Cloud / Gemini
+google-auth==2.55.1
+google-genai==2.10.0
+
+# Excel automation
+openpyxl==3.1.5
